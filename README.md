@@ -8,3 +8,8 @@ This application is very easy to use. If the executable name is SimpleCalculator
 SimpleCalculator 1+8%3/2-5
 
 Attention, the arithmetic expression may not contain any spaces or tabs.
+
+In addition, some shell consoles don't treat '(' or ')' as a common token. They may have special meaning. In this situation, you can substitute ( ) for [ ]. In the main function, there is a filter to transform [ ] back to ( ).
+
+So, if you want to input 「 SimpleCalculator (1+8)/(2+1) 」, use 「 SimpleCalculator [1+8]/[2+1] 」 instead.
+
