@@ -25,7 +25,8 @@ enum PARSE_PHASE_STATUS
     PARSE_PHASE_STATUS_LEFT_OPERAND = 0,
     PARSE_PHASE_STATUS_RIGHT_OPERAND,
     PARSE_PHASE_STATUS_LEFT_PARENTHESIS,
-    PARSE_PHASE_STATUS_NEED_OPERATOR = 4
+    PARSE_PHASE_STATUS_NEED_OPERATOR = 4,
+    PARSE_PHASE_STATUS_HAS_NEG = 8
 };
 
 /** 当前算术计算优先级 */
@@ -121,18 +122,31 @@ static double (* const opFuncTables[])(double, double) = {
     ['/' - '%'] = &DivOp,
 };
 
+/** 判定是否为有效操作符 */
 static inline bool IsOperator(char ch)
 {
     return ch >= '%' && ch <= '/';
 }
 
-static double ParseArithmeticExpression(const char *cursor, double leftOperand, enum PARSE_PHASE_STATUS status, enum OPERATOR_PRIORITY priority, bool *pStatus)
+/** 
+ * 解析当前的算术表达式
+ * @param ppCursor 指向当前算术表达式字符串的地址。
+ * 它既是输入又是输出。当当前算术表达式作为括号进行计算时，
+ * 需要将右括号的位置输出到实参。
+ * @param leftOperand 当前左操作数的值
+ * @param status 当前计算状态
+ * @param priority 当前计算的算术优先级
+ * @param pStatus 输出解析状态
+ * @return 输出计算表达式的结果
+*/
+static double ParseArithmeticExpression(const char **ppCursor, double leftOperand, enum PARSE_PHASE_STATUS status, enum OPERATOR_PRIORITY priority, bool *pStatus)
 {
+    const char *cursor = *ppCursor;
     var rightOperand = 0.0;
     
-    var isSuccessful = true;
     var length = 0;
     double (*pFunc)(double, double) = NULL;
+    bool isSuccessful = true;
     
     char ch;
     
@@ -147,15 +161,25 @@ static double ParseArithmeticExpression(const char *cursor, double leftOperand, 
             cursor += length;
             
             if((status & PARSE_PHASE_STATUS_RIGHT_OPERAND) == PARSE_PHASE_STATUS_LEFT_OPERAND)
-                leftOperand += value;
+            {
+                leftOperand = value;
+                // 如果具有负数符号，则将左操作数做取相反数操作
+                if((status & PARSE_PHASE_STATUS_HAS_NEG) != 0)
+                    leftOperand = -leftOperand;
+            }
             else
             {
-                rightOperand = value;
-                
                 // 对于当前为右操作数的情况，根据操作符计算优先级，
                 // 需要进一步判定后面的操作优先级是否大于前面的，
                 // 如果大于前面的，则需要做递归计算
+                rightOperand = value;
+                // 如果具有负数符号，则将左操作数做取相反数操作
+                if((status & PARSE_PHASE_STATUS_HAS_NEG) != 0)
+                    rightOperand = -rightOperand;
             }
+            
+            // 清除负数标志
+            status &= ~PARSE_PHASE_STATUS_HAS_NEG;
             
             // 添加后续需要算术操作符的状态标志
             status |= PARSE_PHASE_STATUS_NEED_OPERATOR;
@@ -166,11 +190,43 @@ static double ParseArithmeticExpression(const char *cursor, double leftOperand, 
             // 因此我们在这个分支中同时对这两类符号进行解析判断
             if(ch == '(')
             {
+                cursor++;
                 
+                if((status & PARSE_PHASE_STATUS_RIGHT_OPERAND) == 0)
+                {
+                    // 如果当前状态为左操作数
+                    leftOperand = ParseArithmeticExpression(&cursor, 0.0, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_LEFT_PARENTHESIS, OPERATOR_PRIORITY_ADD, &isSuccessful);
+                }
+                else
+                {
+                    // 如果当前状态为右操作数
+                    rightOperand = ParseArithmeticExpression(&cursor, 0.0, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_LEFT_PARENTHESIS, OPERATOR_PRIORITY_ADD, &isSuccessful);
+                }
+                // 如果当前游标所指向的字符不是')'，说明没有匹配到合适的)，中断解析
+                if(!isSuccessful || *cursor != ')')
+                {
+                    isSuccessful = false;
+                    break;
+                }
+                // 清除当前左括号状态
+                status &= ~PARSE_PHASE_STATUS_LEFT_PARENTHESIS;
+                
+                // 添加后续需要算术操作符的状态标志
+                status |= PARSE_PHASE_STATUS_NEED_OPERATOR;
             }
             else if(ch == ')')
             {
+                // 如果遇到')'字符，说明需要与之前的'('进行匹配
+                if((status & PARSE_PHASE_STATUS_LEFT_PARENTHESIS) == 0)
+                {
+                    // 如果当前不处于左括号状态，则说明这个是多余的)，立即中断解析
+                    *pStatus = false;
+                    return 0.0;
+                }
+                // 将当前游标位置输出给实参
+                *ppCursor = cursor;
                 
+                return (pFunc != NULL)? pFunc(leftOperand, rightOperand) : leftOperand;
             }
             else
             {
@@ -179,6 +235,14 @@ static double ParseArithmeticExpression(const char *cursor, double leftOperand, 
                     if(ch == '-')
                     {
                         // 如果当前不需要操作符，则将减号视作为负数符号
+                        // 作为负数符号的话后面必须跟一个数，否则也是无效的
+                        if(IsDigital(cursor[1]))
+                           status |= PARSE_PHASE_STATUS_HAS_NEG;
+                        else
+                        {
+                            isSuccessful = false;
+                            break;
+                        }
                     }
                     else
                     {
@@ -227,7 +291,7 @@ static double ParseArithmeticExpression(const char *cursor, double leftOperand, 
                                 pFunc = AddOp;
                                 rightOperand = -rightOperand;
                             }
-                            var value = ParseArithmeticExpression(cursor, rightOperand, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_NEED_OPERATOR, pry, pStatus);
+                            var value = ParseArithmeticExpression(&cursor, rightOperand, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_NEED_OPERATOR, pry, pStatus);
                             return pFunc(leftOperand, value);
                         }
                     }
@@ -236,14 +300,18 @@ static double ParseArithmeticExpression(const char *cursor, double leftOperand, 
                 }
                 // 清除需要操作符标志
                 status &= ~PARSE_PHASE_STATUS_NEED_OPERATOR;
-                
-                cursor++;
             }
+            
+            cursor++;
         }
         else
             cursor++;
     }
     while(ch != '\0');
+    
+    // 若解析失败，则后续出结果时不做任何相关计算
+    if(!isSuccessful)
+        pFunc = NULL;
     
     if(pStatus != NULL)
         *pStatus = isSuccessful;
@@ -264,7 +332,7 @@ bool CalculateArithmeticExpression(const char expr[], char result[static 32])
     
     bool ret;
     
-    var value = ParseArithmeticExpression(expr, 0.0, PARSE_PHASE_STATUS_LEFT_OPERAND, OPERATOR_PRIORITY_ADD, &ret);
+    var value = ParseArithmeticExpression(&expr, 0.0, PARSE_PHASE_STATUS_LEFT_OPERAND, OPERATOR_PRIORITY_ADD, &ret);
     
     if(!ret)
         return ret;
@@ -272,28 +340,32 @@ bool CalculateArithmeticExpression(const char expr[], char result[static 32])
     sprintf(result, "%f", value);
     
     // 我们下面将把多余的.00000这种字样给过滤掉，使得结果输出更好看一些
-    const var length = strlen(result);
+    int length = (int)strlen(result);
     
-    if(length > 2)
+    var dotIndex = -1;
+    var hasE = false;
+    for(int i = 0; i < length; i++)
+    {
+        if(result[i] == '.')
+            dotIndex = i;
+        else if(result[i] == 'e')
+            hasE = true;
+    }
+    // 我们只有在仅存在小数点的情况下做过滤
+    if(dotIndex >= 0 && !hasE)
     {
         var index = length;
-        var needFilter = true;
         
         while(--index > 0)
         {
-            var ch = result[index];
-            if(ch != '0')
-            {
-                // 若小数点后面有一个非零存在，那么我们就不做过滤
-                if(ch != '.')
-                    needFilter = false;
-                
+            if(result[index] != '0')
                 break;
-            }
-        }
-        // 若需要过滤，那么我们把小数点位置的点符号替换为字符串结束符
-        if(needFilter)
+            
             result[index] = '\0';
+        }
+        // 如果dotIndex后面没有具体数字了，那么我们将小数点也过滤掉
+        if(result[dotIndex + 1] == '\0')
+            result[dotIndex] = '\0';
     }
     
     return true;
@@ -337,6 +409,16 @@ int main(int argc, const char * argv[])
     // 该函数在<string.h>头文件中
     strncpy(argBuffer, argv[1], length);
     
+    // 由于一些命令控制台不支持带有圆括号()的表达式，但支持方括号[]表达式，
+    // 所以我们这里可以将输入中的[]再替换回()。
+    for(typeof(length) i = 0; i < length; i++)
+    {
+        if(argBuffer[i] == '[')
+            argBuffer[i] = '(';
+        else if(argBuffer[i] == ']')
+            argBuffer[i] = ')';
+    }
+    
     printf("The arithmetic expression to be calculated: %s\n", argBuffer);
     
     char result[32];
@@ -346,5 +428,3 @@ int main(int argc, const char * argv[])
     else
         puts("Invalid expression!");
 }
-
-
