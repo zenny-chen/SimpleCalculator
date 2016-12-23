@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdalign.h>
 
 /** 我们这里使用简约的var作为对象类型的自动推导 */
 #define var     __auto_type
@@ -36,7 +37,10 @@ enum OPERATOR_PRIORITY
     OPERATOR_PRIORITY_ADD,
     
     /** 乘除以及求模优先级 */
-    OPERATOR_PRIORITY_MUL
+    OPERATOR_PRIORITY_MUL,
+    
+    /** 幂运算优先级 */
+    OPERATOR_PRIORITY_POW
 };
 
 /** 判定当前字符是否属于数字 */
@@ -45,9 +49,40 @@ static inline bool IsDigital(char ch)
     return ch >= '0' && ch <= '9';
 }
 
+/** 
+ * 判定当前是否为数学常量
+ * @return 如果是数学常量，则返回该常量的字符个数，否则返回0
+*/
+static inline int IsMathConstant(const char *cursor)
+{
+    if(cursor[0] == 'p' && cursor[1] == 'i')
+        return 2;
+    
+    // 由于本程序还支持exp函数用于计算e的指数幂，
+    // 所以如果后面e后面包含了一个x，那么这个e就不会是数学常量
+    if(cursor[0] == 'e' && cursor[1] != 'x')
+        return 1;
+    
+    return 0;
+}
+
+/** 判定当前字符是否可能为函数 */
+static inline bool IsMathFunction(char ch)
+{
+    return ch >= 'a' && ch <= 'z';
+}
+
 /** 对数字进行解析 */
 static double ParseDigital(const char *cursor, int *pRetLength)
 {
+    // 我们先判断当前是否为数学常量
+    var length = IsMathConstant(cursor);
+    if(length > 0)
+    {
+        *pRetLength = length;
+        return (cursor[0] == 'p')? M_PI : M_E;
+    }
+    
     char value[MAX_ARGUMENT_LENGTH + 1];
     
     char ch;
@@ -75,8 +110,9 @@ static double ParseDigital(const char *cursor, int *pRetLength)
     }
     while(ch != '\0');
     
-    if(pRetLength != NULL)
-        *pRetLength = index;
+    value[index] = '\0';
+    
+    *pRetLength = index;
     
     // atof函数是将一个字符数组中的内容转为一个double类型的浮点数值
     // 该函数在<stdlib.h>头文件中
@@ -120,12 +156,96 @@ static double (* const opFuncTables[])(double, double) = {
     ['+' - '%'] = &AddOp,
     ['-' - '%'] = &MinusOp,
     ['/' - '%'] = &DivOp,
+    ['^' - '%'] = &pow
 };
 
 /** 判定是否为有效操作符 */
 static inline bool IsOperator(char ch)
 {
-    return ch >= '%' && ch <= '/';
+    return (ch >= '%' && ch <= '/') || ch == '^';
+}
+
+static double radian(double degree)
+{
+    return degree * M_PI / 180.0;
+}
+
+static double degree(double radian)
+{
+    return radian * 180.0 / M_PI;
+}
+
+static double cot(double radian)
+{
+    return tan(M_PI * 0.5 - radian);
+}
+
+static double recp(double x)
+{
+    return 1.0 / x;
+}
+
+static const struct
+{
+    int name;
+    double (*pFunc)(double);
+} mathFuncList[] = {
+    { '\0nis', &sin },
+    { '\0soc', &cos },
+    { '\0nat', &tan },
+    { '\0toc', &cot },
+    { 'hnis', &sinh },
+    { 'hsoc', &cosh },
+    { 'hnat', &tanh },
+    { 'nisa', &asin },
+    { 'soca', &acos },
+    { 'nata', &atan },
+    { 'hnsa', &asinh },
+    { 'hsca', &acosh },
+    { '\0gol', &log2 },
+    { '\0\0gl', &log10 },
+    { '\0\0nl', &log },
+    { 'trqs', &sqrt },
+    { 'trbc', cbrt },
+    { 'pcer', &recp },
+    { '\0dar', &radian },
+    { '\0ged', &degree },
+    { '\0pxe', &exp }
+};
+
+static double (*ParseMathFunction(const char *cursor, int *pLength))(double)
+{
+    // 这里buffer至少要求4字节对齐。因为我们后面会对前4个字节内容进行同时访问
+    char alignas(4) buffer[8] = { '\0' };
+    var index = 0;
+    
+    // 由于我们这里规定的数学符号最多占用4个字节，
+    // 所以需要用一个计数器来防治访问越界
+    for(var count = 0; count < 4; count++, index++)
+    {
+        var ch = cursor[index];
+        if(!IsMathFunction(ch))
+            break;
+        
+        buffer[index] = ch;
+    }
+    buffer[index] = '\0';
+    
+    // 同时取出刚才所存放的四个字节内容，方便比较
+    var value = *(int*)buffer;
+    
+    // 查找函数表中是否含有该函数名
+    const var length = sizeof(mathFuncList) / sizeof(mathFuncList[0]);
+    for(typeof(length + 0) i = 0; i < length; i++)
+    {
+        if(mathFuncList[i].name == value)
+        {
+            *pLength = index;
+            return mathFuncList[i].pFunc;
+        }
+    }
+    
+    return NULL;
 }
 
 /** 
@@ -145,7 +265,13 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
     var rightOperand = 0.0;
     
     var length = 0;
-    double (*pFunc)(double, double) = NULL;
+    
+    // 指向操作符函数的指针
+    double (*pOpFunc)(double, double) = NULL;
+    
+    // 指向数学函数的指针
+    double (*pMathFunc)(double) = NULL;
+    
     bool isSuccessful = true;
     
     char ch;
@@ -154,8 +280,8 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
     {
         ch = *cursor;
         
-        // 先判定当前字符是否属于数字
-        if(IsDigital(ch))
+        // 先判定当前字符是否属于数字或数学常量
+        if(IsDigital(ch) || IsMathConstant(cursor) > 0)
         {
             double value = ParseDigital(cursor, &length);
             cursor += length;
@@ -184,6 +310,23 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
             // 添加后续需要算术操作符的状态标志
             status |= PARSE_PHASE_STATUS_NEED_OPERATOR;
         }
+        else if(IsMathFunction(ch))
+        {
+            pMathFunc = ParseMathFunction(cursor, &length);
+            if(pMathFunc == NULL)
+            {
+                // 如果数学函数返回空，说明解析失败，立即中断解析
+                isSuccessful = false;
+                break;
+            }
+            cursor += length;
+            if(*cursor != '(')
+            {
+                // 如果函数后面没有跟(，那也不是一个合法的表达式，立即中断解析
+                isSuccessful = false;
+                break;
+            }
+        }
         else if(IsOperator(ch))
         {
             // 这个区间范围内包含了常用的算术操作符以及左右圆括号，
@@ -192,22 +335,38 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
             {
                 cursor++;
                 
-                if((status & PARSE_PHASE_STATUS_RIGHT_OPERAND) == 0)
-                {
-                    // 如果当前状态为左操作数
-                    leftOperand = ParseArithmeticExpression(&cursor, 0.0, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_LEFT_PARENTHESIS, OPERATOR_PRIORITY_ADD, &isSuccessful);
-                }
-                else
-                {
-                    // 如果当前状态为右操作数
-                    rightOperand = ParseArithmeticExpression(&cursor, 0.0, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_LEFT_PARENTHESIS, OPERATOR_PRIORITY_ADD, &isSuccessful);
-                }
+                double value = ParseArithmeticExpression(&cursor, 0.0, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_LEFT_PARENTHESIS, OPERATOR_PRIORITY_ADD, &isSuccessful);
+                
                 // 如果当前游标所指向的字符不是')'，说明没有匹配到合适的)，中断解析
                 if(!isSuccessful || *cursor != ')')
                 {
                     isSuccessful = false;
                     break;
                 }
+                
+                if((status & PARSE_PHASE_STATUS_RIGHT_OPERAND) == 0)
+                {
+                    // 如果当前状态为左操作数
+                    if(pMathFunc != NULL)
+                    {
+                        leftOperand = pMathFunc(value);
+                        pMathFunc = NULL;
+                    }
+                    else
+                        leftOperand = value;
+                }
+                else
+                {
+                    // 如果当前状态为右操作数
+                    if(pMathFunc != NULL)
+                    {
+                        rightOperand = pMathFunc(value);
+                        pMathFunc = NULL;
+                    }
+                    else
+                        rightOperand = value;
+                }
+
                 // 清除当前左括号状态
                 status &= ~PARSE_PHASE_STATUS_LEFT_PARENTHESIS;
                 
@@ -216,17 +375,10 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
             }
             else if(ch == ')')
             {
-                // 如果遇到')'字符，说明需要与之前的'('进行匹配
-                if((status & PARSE_PHASE_STATUS_LEFT_PARENTHESIS) == 0)
-                {
-                    // 如果当前不处于左括号状态，则说明这个是多余的)，立即中断解析
-                    *pStatus = false;
-                    return 0.0;
-                }
                 // 将当前游标位置输出给实参
                 *ppCursor = cursor;
                 
-                return (pFunc != NULL)? pFunc(leftOperand, rightOperand) : leftOperand;
+                return (pOpFunc != NULL)? pOpFunc(leftOperand, rightOperand) : leftOperand;
             }
             else
             {
@@ -236,7 +388,7 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
                     {
                         // 如果当前不需要操作符，则将减号视作为负数符号
                         // 作为负数符号的话后面必须跟一个数，否则也是无效的
-                        if(IsDigital(cursor[1]))
+                        if(IsDigital(cursor[1]) || IsMathConstant(&cursor[1]) > 0)
                            status |= PARSE_PHASE_STATUS_HAS_NEG;
                         else
                         {
@@ -260,10 +412,15 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
                         isSuccessful = false;
                         break;
                     }
-                    var pry = (tmpFunc == AddOp || tmpFunc == MinusOp)? OPERATOR_PRIORITY_ADD : OPERATOR_PRIORITY_MUL;
+                    // 判定当前操作符的计算优先级
+                    var pry = OPERATOR_PRIORITY_ADD;
+                    if(tmpFunc == ModOp || tmpFunc == MulOp || tmpFunc == DivOp)
+                        pry = OPERATOR_PRIORITY_MUL;
+                    else if(tmpFunc == pow)
+                        pry = OPERATOR_PRIORITY_POW;
                     
-                    if(pFunc == NULL)
-                        pFunc = tmpFunc;
+                    if(pOpFunc == NULL)
+                        pOpFunc = tmpFunc;
                     
                     if((status & PARSE_PHASE_STATUS_RIGHT_OPERAND) == 0)
                     {
@@ -275,24 +432,30 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
                         // 如果之前优先级不小于当前操作符的优先级，那么立即做归约
                         if(priority >= pry)
                         {
-                            leftOperand = pFunc(leftOperand, rightOperand);
+                            leftOperand = pOpFunc(leftOperand, rightOperand);
                             rightOperand = 0.0;
                             // 随后更新当前操作函数以及计算优先级
-                            pFunc = tmpFunc;
+                            pOpFunc = tmpFunc;
                         }
                         else
                         {
                             // 如果当前碰到了比之前优先级更改的操作符，
                             // 那么我们采用递归的方式进行计算
-                            if(pFunc == MinusOp)
+                            if(pOpFunc == MinusOp)
                             {
                                 // 如果之前的计算是减法，那么根据减法不适用于结合律的性质，
                                 // 我们这里将它作为一个加法，并且将右操作数取负
-                                pFunc = AddOp;
+                                pOpFunc = AddOp;
                                 rightOperand = -rightOperand;
                             }
+                            
+                            // 递归做高优先级的运算操作
                             var value = ParseArithmeticExpression(&cursor, rightOperand, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_NEED_OPERATOR, pry, pStatus);
-                            return pFunc(leftOperand, value);
+                            
+                            // 由于我们可能会碰到在括号操作符中的归约，比如：(1+(3*5))
+                            // 所以这里我们也要将当前游标位置进行输出
+                            *ppCursor = cursor;
+                            return pOpFunc(leftOperand, value);
                         }
                     }
                     // 更新当前计算优先级
@@ -302,21 +465,29 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
                 status &= ~PARSE_PHASE_STATUS_NEED_OPERATOR;
             }
             
+            // 对于所有操作符情况，最后都让游标往前走一格
             cursor++;
         }
         else
-            cursor++;
+        {
+            // 如果遇到其他字符，倘若不是字符串结束符则宣告解析失败
+            if(ch != '\0')
+            {
+                isSuccessful = false;
+                break;
+            }
+        }
     }
     while(ch != '\0');
     
     // 若解析失败，则后续出结果时不做任何相关计算
     if(!isSuccessful)
-        pFunc = NULL;
+        pOpFunc = NULL;
     
     if(pStatus != NULL)
         *pStatus = isSuccessful;
     
-    return (pFunc == NULL)? leftOperand : pFunc(leftOperand, rightOperand);
+    return (pOpFunc == NULL)? leftOperand : pOpFunc(leftOperand, rightOperand);
 }
 
 /**
@@ -325,26 +496,47 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
  * @param result 以字符串的形式输出结果，这里设置了实参至少需要提供的缓存长度
  * @return 如果表达式解析成功，返回true，否则返回false
 */
-bool CalculateArithmeticExpression(const char expr[], char result[static 32])
+bool CalculateArithmeticExpression(char expr[], char result[static 32])
 {
     if(expr[0] == '\0')
         return false;
     
-    bool ret;
+    /*** 我们先对输入字符串做一些过滤，使得当中出现的一些符号能适配本程序 */
+    var length = (int)strlen(expr);
     
-    var value = ParseArithmeticExpression(&expr, 0.0, PARSE_PHASE_STATUS_LEFT_OPERAND, OPERATOR_PRIORITY_ADD, &ret);
+    // 由于一些命令控制台不支持带有圆括号()的表达式，但支持方括号[]表达式，
+    // 所以我们这里可以将输入中的[]再替换回()。
+    // 此外，我们将出现的所有大写字母替换为小写字母
+    for(var i = 0; i < length; i++)
+    {
+        var ch = expr[i];
+        if(ch == '[')
+            expr[i] = '(';
+        else if(ch == ']')
+            expr[i] = ')';
+        else if(ch >= 'A' && ch <= 'Z')
+        {
+            // 由于ASCII码的巧妙设计，大写字母与小写字母正好相差0x20，
+            // 所以我们这里只需通过加上0x20值就能方便地将大写字母转为小写字母
+            expr[i] += 0x20;
+        }
+    }
+    
+    bool ret = false;
+    
+    var value = ParseArithmeticExpression((const char**)&expr, 0.0, PARSE_PHASE_STATUS_LEFT_OPERAND, OPERATOR_PRIORITY_ADD, &ret);
     
     if(!ret)
         return ret;
     
-    sprintf(result, "%f", value);
+    // 我们将结果显示为小数点后面跟8位尾数
+    sprintf(result, "%.8f", value);
     
     // 我们下面将把多余的.00000这种字样给过滤掉，使得结果输出更好看一些
-    int length = (int)strlen(result);
-    
+    length = (int)strlen(result);
     var dotIndex = -1;
     var hasE = false;
-    for(int i = 0; i < length; i++)
+    for(var i = 0; i < length; i++)
     {
         if(result[i] == '.')
             dotIndex = i;
@@ -409,25 +601,16 @@ int main(int argc, const char * argv[])
     // 该函数在<string.h>头文件中
     strncpy(argBuffer, argv[1], length);
     
-    // 由于一些命令控制台不支持带有圆括号()的表达式，但支持方括号[]表达式，
-    // 所以我们这里可以将输入中的[]再替换回()。
-    for(typeof(length) i = 0; i < length; i++)
-    {
-        if(argBuffer[i] == '[')
-            argBuffer[i] = '(';
-        else if(argBuffer[i] == ']')
-            argBuffer[i] = ')';
-    }
+    char result[32];
+    
+    var state = CalculateArithmeticExpression(argBuffer, result);
     
     printf("The arithmetic expression to be calculated: %s\n", argBuffer);
     
-    char result[32];
-    
-    if(CalculateArithmeticExpression(argBuffer, result))
+    if(state)
         printf("The answer is: %s\n", result);
     else
         puts("Invalid expression!");
 }
-
 
 
