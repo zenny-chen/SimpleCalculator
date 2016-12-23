@@ -14,6 +14,6 @@ In addition, some shell consoles don't treat '(' or ')' as a common token. They 
 So, if you want to input 「 SimpleCalculator (1+8)/(2+1) 」, use 「 SimpleCalculator [1+8]/[2+1] 」 instead.
 
 Take a more complex arithmetic expression for example: 
-SimpleCalculator [pi+sin[rad[45]]*sqrt[2]]*ln[e]*ln[exp[2]]
+SimpleCalculator [pi+sin[rad[45]]\*sqrt[2]]\*ln[e]\*ln[exp[2]]
 
 The following math functions are supported: sin, cos, tan, cot, sinh, cosh, tanh, asin(arcsin), acos(arccos), atan(arctan), asnh(arcsinh), acsh(arccosh), log(log2), lg(log10), ln(log e), sqrt, cbrt(cube root), recp(reciprocal), deg(degree), rad(radian), exp(power of e).
