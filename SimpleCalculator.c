@@ -452,7 +452,7 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
                             // 递归做高优先级的运算操作
                             var value = ParseArithmeticExpression(&cursor, rightOperand, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_NEED_OPERATOR, pry, pStatus);
                             
-                            // 由于我们可能会碰到在括号操作符中的归约，比如：(1+(3*5))
+                            // 由于我们可能会碰到在括号操作符中的归约，比如：(1+(-2)*(-3))
                             // 所以这里我们也要将当前游标位置进行输出
                             *ppCursor = cursor;
                             return pOpFunc(leftOperand, value);
