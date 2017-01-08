@@ -448,12 +448,20 @@ static double ParseArithmeticExpression(const char **ppCursor, double leftOperan
                                 pOpFunc = AddOp;
                                 rightOperand = -rightOperand;
                             }
+                            else if(pOpFunc == DivOp)
+                            {
+                                // 如果之前的计算是除法，那么根据除法不适用于结合律的性质，
+                                // 我们这里将它作为一个乘法，并且将右操作数取其倒数
+                                pOpFunc = MulOp;
+                                rightOperand = 1.0 / rightOperand;
+                            }
                             
                             // 递归做高优先级的运算操作
                             var value = ParseArithmeticExpression(&cursor, rightOperand, PARSE_PHASE_STATUS_LEFT_OPERAND | PARSE_PHASE_STATUS_NEED_OPERATOR, pry, pStatus);
                             
-                            // 由于我们可能会碰到在括号操作符中的高优先级运算的归约，比如考虑这个表达式：(1+2*3)
-                            // 这里，2*3)会在同一个调用级中，所以)的输出无法影响到先前的(，而直接影响到的是1+这一级。
+                            // 由于我们可能会碰到在括号操作符中的高优先级运算的归约，
+                            // 比如考虑这个表达式：(1+2*3)
+                            // 这里，2*3)会在同一个调用级中，所以)的输出无法影响到先前的(，
                             // 所以这里我们也要将当前游标位置进行输出，返回给上一级的调用
                             *ppCursor = cursor;
                             return pOpFunc(leftOperand, value);
