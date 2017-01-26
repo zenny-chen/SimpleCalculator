@@ -519,15 +519,21 @@ bool CalculateArithmeticExpression(char expr[], char result[static 32])
     for(var i = 0; i < length; i++)
     {
         var ch = expr[i];
-        if(ch == '[')
-            expr[i] = '(';
-        else if(ch == ']')
-            expr[i] = ')';
-        else if(ch >= 'A' && ch <= 'Z')
+
+        switch(ch)
         {
-            // 由于ASCII码的巧妙设计，大写字母与小写字母正好相差0x20，
-            // 所以我们这里只需通过加上0x20值就能方便地将大写字母转为小写字母
+        case '[':
+            expr[i] = '(';
+            break;
+        case ']':
+            expr[i] = ')';
+            break;
+        case '$':
+            expr[i] = '^';
+            break;
+        case 'A' ... 'Z':
             expr[i] += 0x20;
+            break;
         }
     }
     
@@ -584,7 +590,6 @@ int main(int argc, const char * argv[])
     // 则直接输出结果1，后面的+2会被忽略。
     if(argc < 2)
     {
-        
         puts("No expression to calculate!");
         return 0;
     }
@@ -621,5 +626,4 @@ int main(int argc, const char * argv[])
     else
         puts("Invalid expression!");
 }
-
 
