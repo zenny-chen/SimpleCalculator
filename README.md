@@ -9,7 +9,7 @@ SimpleCalculator 1+8%3/2-5
 
 Attention, the arithmetic expression may not contain any spaces or tabs.
 
-In addition, some shell consoles don't treat '(' or ')' as a common token. They may have special meaning. In this situation, you can substitute [ ] for ( ). In the main function, there is a filter to transform [ ] back to ( ).
+In addition, some shell consoles don't treat '(', ')' or '^' as a common token. They may have special meaning. In this situation, you can substitute [ ] for ( ), and substitute $ for ^. In the main function, there is a filter to transform [, ], and $ back to (, ), and ^.
 
 So, if you want to input 「 SimpleCalculator (1+8)/(2+1) 」, use 「 SimpleCalculator [1+8]/[2+1] 」 instead.
 
